@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <title>Interaktiv Quiz Platformasi</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; text-align: center; padding: 20px; margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+        .main-wrapper { flex: 1; }
+        .container { max-width: 650px; margin: 20px auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); position: relative; }
+        .container-wide { max-width: 900px; }
+        button { padding: 12px 25px; margin: 8px; font-size: 16px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; transition: 0.2s; color: white; width: calc(50% - 20px); }
+        .btn-full { width: 100%; margin: 10px 0; }
+        .btn-student { background: #3498db; } .btn-group { background: #9b59b6; } .btn-login { background: #2ecc71; } .btn-danger { background: #e74c3c; }
+        .btn-ans { background: #ecf0f1; color: #333; display: block; width: 100%; margin: 10px 0; border: 2px solid #bdc3c7; padding: 15px; font-size: 18px; text-align: left; }
+        .btn-ans:hover:not(:disabled) { background: #bdc3c7; }
+        .btn-ans:disabled { cursor: not-allowed; }
+        input, select { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; }
+        .hidden { display: none !important; }
+        .msg { font-weight: bold; margin: 10px 0; }
+        
+        /* Reyting Tablosining stillari */
+        .rank-1 { background: #2ecc71 !important; color: white !important; font-size: 22px !important; }
+        .rank-2 { background: #f1c40f !important; color: black !important; font-size: 20px !important; }
+        .rank-3 { background: #e74c3c !important; color: white !important; font-size: 19px !important; }
+        .rank-other { background: #ffffff; border: 1px solid #ddd; color: #333; }
+        .player-item { padding: 14px; margin: 8px 0; border-radius: 8px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: left; display: flex; justify-content: space-between; }
+        .quiz-item { border:1px solid #ccc; padding:15px; margin-top:10px; border-radius:8px; text-align: left; background: #fafafa;}
+        
+        .top-right-exit { position: absolute; top: 15px; right: 15px; width: auto; padding: 6px 15px; font-size: 14px; margin: 0; z-index: 10; }
+        
+        /* Jonli monitor jadvali stillari */
+        .monitor-table { width: 100%; border-collapse: collapse; margin-top: 15px; text-align: left; background: white; }
+        .monitor-table th, .monitor-table td { padding: 14px; border: 1px solid #ddd; font-size: 16px; }
+        .monitor-table th { background: #34495e; color: white; }
+        .badge-waiting { background: #fce4e4; color: #e74c3c; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #f5c6cb; }
+        .badge-success { background: #d4edda; color: #155724; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #c3e6cb; }
+        
+        .stats-table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 16px; text-align: left; }
+        .stats-table th, .stats-table td { padding: 10px; border: 1px solid #ddd; }
+        .stats-table th { background-color: #f2f2f2; }
+        .error-log-item { background: #fdf2f2; border-left: 5px solid #e74c3c; padding: 12px; margin: 10px 0; text-align: left; border-radius: 4px; }
+        
+        .student-header { background: #ecf0f1; padding: 10px 15px; border-radius: 6px; margin-bottom: 15px; font-weight: bold; color: #2c3e50; display: flex; justify-content: space-between; font-size: 16px; border: 1px solid #bdc3c7; }
+        
+        /* Ha / Yo'q Tasdiqlash Modali */
+        .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index: 2000; }
+        .modal-content { background: white; padding: 30px; border-radius: 10px; max-width: 450px; width: 90%; box-shadow: 0 5px 15px rgba(0,0,0,0.3); text-align: center; }
+        .modal-btns { display: flex; justify-content: center; gap: 15px; margin-top: 20px; }
+        .modal-btns button { width: 120px; margin: 0; }
+
+        footer { background: #2c3e50; color: #ecf0f1; padding: 15px; text-align: center; font-weight: bold; font-size: 15px; letter-spacing: 0.5px; margin-top: auto; border-top: 3px solid #34495e; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+
+<div class="main-wrapper">
+    <div class="container" id="main-menu">
+        <h2>Platformaga xush kelibsiz</h2>
+        <button class="btn-student" onclick="show('student-solo')">Student (Solo)</button>
+        <button class="btn-group" onclick="show('student-group')">Guruhda test ishlash</button>
+        <hr style="margin: 20px 0;">
+        <button class="btn-login btn-full" onclick="show('teacher-menu')">Teacher Bo'limi</button>
+    </div>
+
+    <div class="container hidden" id="teacher-menu">
+        <h2>Teacher Bo'limi</h2>
+        <button class="btn-login" onclick="show('teacher-login-view')">Kirish</button>
+        <button class="btn-group" onclick="show('teacher-register-view')">Ro'yxatdan o'tish</button>
+        <br><br>
+        <button class="btn-danger btn-full" onclick="show('main-menu')">Bosh sahifaga qaytish</button>
+    </div>
+
+    <div class="container hidden" id="teacher-register-view">
+        <h2>Ro'yxatdan o'tish</h2>
+        <input type="text" id="r-login" placeholder="Yangi login" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9]/g, '')">
+        <input type="password" id="r-pass" placeholder="Yangi parol">
+        <input type="password" id="r-secret" placeholder="Maxfiy kod (MANGU_1101)">
+        <p class="msg" id="r-msg"></p>
+        <button class="btn-group btn-full" onclick="registerTeacher()">Ro'yxatdan o'tish</button>
+        <button class="btn-danger btn-full" onclick="show('teacher-menu')">Orqaga</button>
+    </div>
+
+    <div class="container hidden" id="teacher-login-view">
+        <h2>Tizimga Kirish</h2>
+        <input type="text" id="l-login" placeholder="Login">
+        <input type="password" id="l-pass" placeholder="Parol">
+        <p class="msg" id="l-msg"></p>
+        <button class="btn-login btn-full" onclick="loginTeacher()">Kirish</button>
+        <button class="btn-danger btn-full" onclick="show('teacher-menu')">Orqaga</button>
+    </div>
+
+    <div class="container hidden" id="teacher-dashboard">
+        <h2 id="welcome-text"></h2>
+        <div style="background: #eef2f5; padding: 15px; border-radius: 8px;">
+            <h3>Yangi Excel fayl yuklash</h3>
+            <input type="file" id="excel-file" accept=".xlsx, .xls">
+            <button class="btn-login btn-full" onclick="uploadFile()">Yuklash va Bo'lish</button>
+        </div>
+        <div style="margin-top: 20px;">
+            <h3>Mening Testlarim</h3>
+            <div id="my-quizzes"></div>
+        </div>
+        <br>
+        <button class="btn-danger btn-full" onclick="logout()">Chiqish (Log out)</button>
+    </div>
+
+    <div class="container hidden" id="student-solo">
+        <h2>Solo Test Ishlash</h2>
+        <input type="text" id="solo-key" placeholder="Test kaliti">
+        <select id="solo-mode">
+            <option value="immediate">Javobi darhol ko'rinadigan</option>
+            <option value="end">Javobi oxirida ko'rinadigan</option>
+        </select>
+        <button class="btn-student btn-full" onclick="startSolo()">Testni Boshlash</button>
+        <button class="btn-danger btn-full" onclick="show('main-menu')">Orqaga</button>
+    </div>
+
+    <div class="container hidden" id="student-group">
+        <h2>Guruhga qo'shilish</h2>
+        <input type="text" id="group-pin" placeholder="Game PIN (Masalan: K0001)">
+        <input type="text" id="group-name" placeholder="Ismingizni kiriting">
+        <button class="btn-group btn-full" onclick="joinGroup()">Qo'shilish</button>
+        <button class="btn-danger btn-full" onclick="show('main-menu')">Orqaga</button>
+    </div>
+
+    <div class="container" id="group-lobby" style="display:none;">
+        <h2 id="lobby-title">Kutilmoqda...</h2>
+        <div id="lobby-players"></div>
+        <button class="btn-login btn-full hidden" id="btn-start-group" onclick="startGroupTest()">Guruh testini boshlash</button>
+        <button class="btn-danger btn-full" onclick="exitLobby()">Chiqish</button>
+    </div>
+
+    <div class="container container-wide hidden" id="teacher-monitor-view">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 style="color:#2c3e50; margin: 0;">Live Kuzatuv Paneli (O'qituvchi)</h2>
+            <button class="btn-danger" style="width: auto; margin: 0;" onclick="openConfirmModal()">O'yinni yakunlash</button>
+        </div>
+        
+        <div style="background:#ecf0f1; padding:15px; border-radius:8px; margin-bottom:15px; text-align:left;">
+            <div style="display: flex; justify-content: space-between; font-weight: bold; color: #34495e; margin-bottom: 10px;">
+                <span id="t-monitor-qindex">Savol: 0/0</span>
+                <span id="t-monitor-timer" style="color: red; font-size: 18px;">Vaqt: 30</span>
+            </div>
+            <h3 id="t-question-title" style="margin:0 0 10px 0;">Savol: </h3>
+            <p id="t-correct-ans" style="color:#2ecc71; font-weight:bold; margin:0;">To'g'ri javob: </p>
+        </div>
+        <h3 style="text-align:left; margin-bottom: 5px;">O'quvchilar holati:</h3>
+        <table class="monitor-table">
+            <thead>
+                <tr>
+                    <th>O'quvchi Ismi</th>
+                    <th style="text-align: center; width: 250px;">Holati</th>
+                </tr>
+            </thead>
+            <tbody id="monitor-players-list"></tbody>
+        </table>
+    </div>
+
+    <div class="container hidden" id="play-area">
+        <div id="student-info-box" class="student-header hidden">
+            <span id="st-card-name">Ism: </span>
+            <span id="st-card-qindex">Savol: 0/0</span>
+        </div>
+        
+        <h3 id="timer-text" style="color:red; font-size: 26px; margin: 10px 0;">Vaqt: 30</h3>
+        <h2 id="question-text" style="margin-bottom: 30px; min-height: 60px;">Savol matni</h2>
+        <div id="answers-area"></div>
+        <button class="btn-login btn-full hidden" id="btn-next" onclick="nextSoloQuestion()">Keyingi</button>
+    </div>
+
+    <div class="container hidden" id="final-leaderboard-view">
+        <button class="btn-danger top-right-exit" onclick="handleExitTablo()">Chiqish</button>
+        <h2 style="color: #2c3e50; margin-bottom: 20px;">🏆 Yakuniy Natijalar Tablosi 🏆</h2>
+        <div id="leaderboard-list"></div>
+    </div>
+
+    <div class="container hidden" id="solo-results-view" style="padding-top: 50px;">
+        <button class="btn-danger top-right-exit" onclick="show('main-menu')">Chiqish</button>
+        <h2>Solo Test Natijalari</h2>
+        <table class="stats-table">
+            <tr> <td>Jami savollar:</td> <td id="stat-total" style="font-weight:bold;">0</td> </tr>
+            <tr> <td style="color: #2ecc71;">To'g'ri topilgan:</td> <td id="stat-correct" style="font-weight:bold; color: #2ecc71;">0</td> </tr>
+            <tr> <td style="color: #e74c3c;">Xato belgilangan:</td> <td id="stat-wrong" style="font-weight:bold; color: #e74c3c;">0</td> </tr>
+            <tr> <td style="color: #f39c12;">Belgilanmagan (Ulgurilmagan):</td> <td id="stat-skipped" style="font-weight:bold; color: #f39c12;">0</td> </tr>
+        </table>
+        <div id="solo-errors-container" style="margin-top: 25px;">
+            <h3 style="text-align: left; color: #e74c3c; border-bottom: 2px solid #e74c3c; padding-bottom: 5px;">Xatolar tahlili:</h3>
+            <div id="solo-errors-list"></div>
+        </div>
+    </div>
+</div>
+
+<div id="confirm-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <h3 style="color: #2c3e50; margin-top: 0;">Testni yakunlash</h3>
+        <p style="font-size: 16px; color: #7f8c8d;">Haqiqatdan ham testni yakunlamoqchimisiz?</p>
+        <div class="modal-btns">
+            <button class="btn-login" onclick="confirmForceEnd(true)">Ha</button>
+            <button class="btn-danger" onclick="confirmForceEnd(false)">Yo'q</button>
+        </div>
+    </div>
+</div>
+
+<footer>
+    Sayt yaratuvchisi: Abdujabborov Mangubberdi
+</footer>
+
+<script>
+    const socket = io();
+    let currentRole = "guest"; // "teacher", "student", "guest" - Kahoot singari boshqaruv kaliti
+    let myStudentName = "";
+    let soloQuiz = null; let soloCurrentQ = 0; let soloScore = 0; let soloTimer; let soloMode = 'immediate';
+    let myGroupPin = null; let groupStartTime = 0;
+    let soloHistory = []; 
+    let activeGroupTimer = null; 
+
+    function show(id) {
+        document.querySelectorAll('.container').forEach(el => {
+            el.classList.add('hidden');
+            el.style.display = ''; 
+        });
+        const target = document.getElementById(id);
+        target.classList.remove('hidden');
+        if(id === 'group-lobby') target.style.display = 'block';
+        
+        document.getElementById('r-msg').innerText = '';
+        document.getElementById('l-msg').innerText = '';
+    }
+
+    // ================= TEACHER MANTIQI =================
+    async function registerTeacher() {
+        const login = document.getElementById('r-login').value;
+        const pass = document.getElementById('r-pass').value;
+        const secret = document.getElementById('r-secret').value;
+        const msgBox = document.getElementById('r-msg');
+
+        if(!login || !pass || !secret) { msgBox.innerText = "Barcha joyni to'ldiring!"; msgBox.style.color = "red"; return; }
+
+        const res = await fetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({login, password: pass, secret}) });
+        const data = await res.json();
+        
+        msgBox.innerText = data.msg;
+        msgBox.style.color = data.success ? 'green' : 'red';
+        if(data.success) {
+            document.getElementById('r-login').value = ''; document.getElementById('r-pass').value = ''; document.getElementById('r-secret').value = '';
+        }
+    }
+
+    async function loginTeacher() {
+        const login = document.getElementById('l-login').value;
+        const pass = document.getElementById('l-pass').value;
+        const msgBox = document.getElementById('l-msg');
+
+        if(!login || !pass) { msgBox.innerText = "Login va parolni kiriting!"; msgBox.style.color = "red"; return; }
+
+        const res = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({login, password: pass}) });
+        const data = await res.json();
+
+        if(data.success) {
+            currentRole = "teacher"; 
+            document.getElementById('welcome-text').innerText = "Kabinet: " + login.toUpperCase();
+            document.getElementById('l-login').value = ''; document.getElementById('l-pass').value = '';
+            renderQuizzes(data.quizzes);
+            show('teacher-dashboard');
+        } else {
+            msgBox.innerText = data.msg; msgBox.style.color = 'red';
+        }
+    }
+
+    function logout() { currentRole = "guest"; show('main-menu'); }
+
+    async function uploadFile() {
+        const file = document.getElementById('excel-file').files[0];
+        if(!file) return alert("Fayl tanlang!");
+        const fd = new FormData(); fd.append('file', file); fd.append('login', document.getElementById('welcome-text').innerText.replace("Kabinet: ", "").toLowerCase());
+        
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if(data.success) { alert("Muvaffaqiyatli yuklandi!"); renderQuizzes(data.quizzes); }
+    }
+
+    function renderQuizzes(quizzes) {
+        const div = document.getElementById('my-quizzes');
+        div.innerHTML = quizzes.map(q => `
+            <div class="quiz-item">
+                <b>${q.title}</b> <br> Solo kod: <span style="color:red; font-weight:bold;">${q.id}</span>
+                <button class="btn-full btn-group" onclick="createGroupGame('${q.id}')">Guruh yaratish (Game PIN)</button>
+            </div>
+        `).join('');
+    }
+
+    // ================= SOLO TEST MANTIQI =================
+    async function startSolo() {
+        const key = document.getElementById('solo-key').value;
+        soloMode = document.getElementById('solo-mode').value;
+        if(!key) return alert("Kalitni kiriting!");
+
+        const res = await fetch(`/api/quiz/${key}`);
+        const data = await res.json();
+        
+        if(data.success) {
+            currentRole = "student";
+            document.getElementById('student-info-box').classList.add('hidden');
+            soloQuiz = data.quiz; soloCurrentQ = 0; soloScore = 0; soloHistory = [];
+            show('play-area'); 
+            loadSoloQuestion();
+        } else { alert(data.msg); }
+    }
+
+    function loadSoloQuestion() {
+        if(soloCurrentQ >= soloQuiz.questions.length) return showSoloResults();
+        
+        document.getElementById('btn-next').classList.add('hidden');
+        let q = soloQuiz.questions[soloCurrentQ];
+        document.getElementById('question-text').innerText = `${soloCurrentQ + 1}. ${q.question}`;
+        
+        let answers = [q.correct, q.wrong1, q.wrong2, q.wrong3].sort(() => Math.random() - 0.5);
+        
+        const answersArea = document.getElementById('answers-area');
+        answersArea.innerHTML = ''; 
+        answers.forEach(ans => {
+            let btn = document.createElement('button');
+            btn.className = 'btn-ans';
+            btn.innerText = ans; 
+            btn.onclick = () => selectSoloAns(btn, ans, q.correct);
+            answersArea.appendChild(btn);
+        });
+        
+        let time = 30; document.getElementById('timer-text').innerText = `Vaqt: ${time}`;
+        clearInterval(soloTimer);
+        soloTimer = setInterval(() => {
+            time--; document.getElementById('timer-text').innerText = `Vaqt: ${time}`;
+            if(time <= 0) { clearInterval(soloTimer); autoSkipSolo(); }
+        }, 1000);
+    }
+
+    function selectSoloAns(btn, selected, correct) {
+        clearInterval(soloTimer);
+        let buttons = document.querySelectorAll('.btn-ans');
+        buttons.forEach(b => b.disabled = true);
+
+        if(selected === correct) { soloScore++; } 
+        else { soloHistory.push({ q: soloQuiz.questions[soloCurrentQ].question, user: selected, correct: correct, status: 'wrong' }); }
+
+        if(soloMode === 'immediate') {
+            if(selected === correct) { btn.style.background = '#2ecc71'; btn.style.color = 'white'; }
+            else { 
+                btn.style.background = '#e74c3c'; btn.style.color = 'white'; 
+                buttons.forEach(b => { if(b.innerText === correct) { b.style.background = '#2ecc71'; b.style.color = 'white'; } }); 
+            }
+        } else { btn.style.background = '#3498db'; btn.style.color = 'white'; }
+        document.getElementById('btn-next').classList.remove('hidden');
+    }
+
+    function autoSkipSolo() {
+        let buttons = document.querySelectorAll('.btn-ans');
+        buttons.forEach(b => b.disabled = true);
+        let q = soloQuiz.questions[soloCurrentQ];
+        soloHistory.push({ q: q.question, user: "Belgilanmagan (Vaqt tugadi)", correct: q.correct, status: 'skipped' });
+
+        if(soloMode === 'immediate') {
+            buttons.forEach(b => { if(b.innerText === q.correct) { b.style.background = '#2ecc71'; b.style.color = 'white'; } });
+        }
+        document.getElementById('btn-next').classList.remove('hidden');
+    }
+
+    function nextSoloQuestion() { soloCurrentQ++; loadSoloQuestion(); }
+
+    function showSoloResults() {
+        show('solo-results-view');
+        let total = soloQuiz.questions.length;
+        let wrongCount = soloHistory.filter(h => h.status === 'wrong').length;
+        let skippedCount = soloHistory.filter(h => h.status === 'skipped').length;
+        
+        document.getElementById('stat-total').innerText = total;
+        document.getElementById('stat-correct').innerText = soloScore;
+        document.getElementById('stat-wrong').innerText = wrongCount;
+        document.getElementById('stat-skipped').innerText = skippedCount;
+        
+        const listDiv = document.getElementById('solo-errors-list');
+        const containerDiv = document.getElementById('solo-errors-container');
+        listDiv.innerHTML = '';
+        if(soloHistory.length === 0) {
+            containerDiv.style.display = 'none';
+            listDiv.innerHTML = "<p style='color:#2ecc71; font-weight:bold;'>Ajoyib! Hech qanday xato qilmadingiz!</p>";
+        } else {
+            containerDiv.style.display = 'block';
+            soloHistory.forEach((h, index) => {
+                let div = document.createElement('div'); div.className = 'error-log-item';
+                div.innerHTML = `<strong>${index + 1}. Savol:</strong> ${h.q} <br><span style="color:#e74c3c;">Sizniki:</span> ${h.user} <br><span style="color:#2ecc71; font-weight:bold;">To'g'ri:</span> ${h.correct}`;
+                listDiv.appendChild(div);
+            });
+        }
+    }
+
+    // ================= GURUH TEST MANTIQI =================
+    function createGroupGame(quizId) {
+        currentRole = "teacher"; 
+        socket.emit('create_game', { quizId });
+    }
+
+    socket.on('game_created', (pin) => {
+        myGroupPin = pin; 
+        show('group-lobby');
+        document.getElementById('lobby-title').innerText = `O'yin PIN KODI: ${pin}`;
+        document.getElementById('lobby-players').innerHTML = '<p>O\'quvchilar ulanishi kutilmoqda...</p>';
+        document.getElementById('btn-start-group').classList.remove('hidden');
+    });
+
+    function joinGroup() {
+        currentRole = "student"; 
+        const pin = document.getElementById('group-pin').value;
+        const name = document.getElementById('group-name').value;
+        if(!pin || !name) return alert("PIN kod va Ismingizni kiriting!");
+        myStudentName = name;
+        myGroupPin = pin; 
+        socket.emit('join_game', { pin, name });
+    }
+
+    socket.on('joined', (data) => { 
+        show('group-lobby'); 
+        document.getElementById('lobby-title').innerText = "O'qituvchi o'yinni boshlashini kuting..."; 
+        document.getElementById('btn-start-group').classList.add('hidden'); 
+    });
+    
+    socket.on('update_lobby', (players) => {
+        document.getElementById('lobby-players').innerHTML = players.map(p => `<div class="player-item rank-other">👤 ${p.name} ulandi...</div>`).join('');
+    });
+
+    function exitLobby() { show('main-menu'); }
+
+    function startGroupTest() { 
+        if(myGroupPin) {
+            socket.emit('start_game', myGroupPin); 
+            show('teacher-monitor-view');
+        }
+    }
+
+    // Modal oynani chiqarish
+    function openConfirmModal() {
+        document.getElementById('confirm-modal').classList.remove('hidden');
+    }
+
+    // Ha yoki Yo'q mantiqi
+    function confirmForceEnd(isConfirmed) {
+        document.getElementById('confirm-modal').classList.add('hidden');
+        if(isConfirmed && myGroupPin) {
+            socket.emit('force_end_game', myGroupPin); // Serverga yakunlash signali ketdi
+        }
+    }
+
+    // --- O'QITUVCHI PANELI REAL-TIME HODISALARI ---
+    let teacherTimerInterval;
+    socket.on('teacher_new_question', (data) => {
+        if(currentRole !== "teacher") return; 
+        
+        show('teacher-monitor-view');
+        document.getElementById('t-monitor-qindex').innerText = `Savol: ${data.qIndex}/${data.totalQ}`;
+        document.getElementById('t-question-title').innerText = `Savol: ${data.question}`;
+        document.getElementById('t-correct-ans').innerText = `To'g'ri javob yuklanmoqda...`;
+        updateTeacherMonitorTable(data.players);
+
+        let tTime = 30;
+        document.getElementById('t-monitor-timer').innerText = `Vaqt: ${tTime}`;
+        clearInterval(teacherTimerInterval);
+        teacherTimerInterval = setInterval(() => {
+            tTime--;
+            document.getElementById('t-monitor-timer').innerText = `Vaqt: ${tTime}`;
+            if(tTime <= 0) clearInterval(teacherTimerInterval);
+        }, 1000);
+    });
+
+    socket.on('teacher_show_answer', (correct) => {
+        if(currentRole !== "teacher") return;
+        document.getElementById('t-correct-ans').innerText = `To'g'ri javob: ${correct}`;
+    });
+
+    socket.on('teacher_monitor_update', (data) => {
+        if(currentRole !== "teacher") return;
+        updateTeacherMonitorTable(data.players);
+    });
+
+    // O'quvchilarning ismi ostidagi yashil va qizil chiroqli mukammal kuzatuv jadvali
+    function updateTeacherMonitorTable(players) {
+        const tbody = document.getElementById('monitor-players-list');
+        if(!players || players.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="2" style="text-align:center; color:#95a5a6;">Kutilmoqda...</td></tr>`;
+            return;
+        }
+        tbody.innerHTML = players.map(p => `
+            <tr>
+                <td><strong>👤 ${p.name}</strong></td>
+                <td style="text-align: center;">
+                    ${p.hasAnswered ? `<span class="badge-success">🟢 Javob berdi</span>` : `<span class="badge-waiting">🔴 O'ylamoqda...</span>`}
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    // --- STUDENT PANELI REAL-TIME HODISALARI ---
+    socket.on('new_question', (data) => {
+        if (currentRole !== "student") return; 
+
+        show('play-area');
+        document.getElementById('student-info-box').classList.remove('hidden');
+        document.getElementById('st-card-name').innerText = `O'quvchi: ${myStudentName}`;
+        document.getElementById('st-card-qindex').innerText = `Savol: ${data.qIndex}/${data.totalQ}`;
+        
+        document.getElementById('btn-next').classList.add('hidden');
+        document.getElementById('question-text').innerText = data.question;
+        
+        const answersArea = document.getElementById('answers-area');
+        answersArea.innerHTML = '';
+        data.answers.forEach(a => {
+            let btn = document.createElement('button');
+            btn.className = 'btn-ans';
+            btn.innerText = a;
+            btn.onclick = () => submitGroupAns(a, btn);
+            answersArea.appendChild(btn);
+        });
+        
+        groupStartTime = Date.now();
+        let time = 30; 
+        document.getElementById('timer-text').innerText = `Vaqt: ${time}`;
+        
+        // Qat'iy qoida: Talaba variant tanlasa ham, bu taymer to'xtamaydi, oxirigacha soniya kamayadi!
+        clearInterval(activeGroupTimer);
+        activeGroupTimer = setInterval(() => { 
+            time--; 
+            document.getElementById('timer-text').innerText = `Vaqt: ${time}`; 
+            if(time <= 0) { clearInterval(activeGroupTimer); }
+        }, 1000);
+    });
+
+    function submitGroupAns(selected, btn) {
+        let timeSpent = Date.now() - groupStartTime;
+        
+        // Faqat bosish cheklanadi, vaqt hisobi ekranda davom etaveradi!
+        document.querySelectorAll('.btn-ans').forEach(b => b.disabled = true);
+        btn.style.background = '#3498db'; 
+        btn.style.color = 'white';
+        
+        socket.emit('submit_answer', { 
+            pin: myGroupPin, 
+            selectedAnswer: selected, 
+            time: timeSpent 
+        });
+    }
+
+    socket.on('show_answer', (correctAns) => {
+        if (currentRole !== "student") return;
+        clearInterval(activeGroupTimer); 
+        
+        document.querySelectorAll('.btn-ans').forEach(b => {
+            b.disabled = true;
+            if(b.innerText === correctAns) { 
+                b.style.background = '#2ecc71'; 
+                b.style.color = 'white'; 
+            } else if(b.style.background.includes('rgb(52, 152, 219)')) { 
+                b.style.background = '#e74c3c'; 
+                b.style.color = 'white'; 
+            }
+        });
+    });
+
+    // --- YAKUNIY REYTING EKRAI (TABLO) ---
+    socket.on('game_over', (players) => {
+        // Hamma oqim va taymerlarni butkul o'chirish
+        clearInterval(teacherTimerInterval);
+        clearInterval(activeGroupTimer);
+        clearInterval(soloTimer);
+        
+        document.getElementById('confirm-modal').classList.add('hidden'); 
+        show('final-leaderboard-view');
+        
+        const listDiv = document.getElementById('leaderboard-list');
+        if(!players || players.length === 0) {
+            listDiv.innerHTML = "<p style='color:#7f8c8d; font-weight:bold;'>Ishtirokchilar qatnashmadi.</p>";
+            return;
+        }
+        
+        listDiv.innerHTML = players.map((p, index) => {
+            let cls = 'rank-other';
+            let medal = '跑';
+            if(index === 0) { cls = 'rank-1'; medal = '🥇 1-O\'rin'; }
+            else if(index === 1) { cls = 'rank-2'; medal = '🥈 2-O\'rin'; }
+            else if(index === 2) { cls = 'rank-3'; medal = '🥉 3-O\'rin'; }
+            else { medal = `🏃 ${index + 1}-O'rin`; }
+            
+            return `
+                <div class="player-item ${cls}">
+                    <span>${medal}: <strong>${p.name}</strong></span>
+                    <span>${p.score} ta to'g'ri (${(p.timeSpent / 1000).toFixed(1)} soniya)</span>
+                </div>
+            `;
+        }).join('');
+    });
+
+    // KAHOOT SINGARI EXIT (CHIQISH) FUNKSIYASI
+    function handleExitTablo() {
+        if (currentRole === "teacher") {
+            // Teacher bo'lsa - avtomatik qayta login qilmasdan dashboardga qaytadi
+            show('teacher-dashboard');
+        } else {
+            // Student bo'lsa - to'g'ridan to'g'ri tizim bosh oynasiga otadi
+            currentRole = "guest";
+            show('main-menu');
+        }
+    }
+
+    socket.on('error', (msg) => alert(msg));
+</script>
+</body>
+</html>
