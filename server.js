@@ -6,6 +6,7 @@ const xlsx = require('xlsx');
 const path = require('path');
 
 const app = express();
+app.use(express.static('PUBLIC'));
 const server = http.createServer(app);
 const io = new Server(server);
 
@@ -254,5 +255,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Serverimiz ${PORT}-portda muvaffaqiyatli ishga tushdi`);
+    console.log(`Server ${PORT}-portda muvaffaqiyatli ishga tushdi`);
 });
