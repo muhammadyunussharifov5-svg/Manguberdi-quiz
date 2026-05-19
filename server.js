@@ -253,4 +253,6 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server ${PORT}-portda faollashdi.`));
+server.listen(PORT, () => {
+    console.log(`Serverimiz ${PORT}-portda muvaffaqiyatli ishga tushdi`);
+});
