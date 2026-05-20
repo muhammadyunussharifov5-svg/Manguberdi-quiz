@@ -256,8 +256,13 @@ io.on('connection', (socket) => {
         const session = activeSessions[code];
         if (!session) return;
 
+        // Agar savollar tugagan bo'lsa, reyting tizimini hisoblab tugatamiz
         if (session.currentIndex >= session.questions.length) {
-            io.to(code).emit('quizFinished', Object.values(session.students));
+            // Talabalarni ballari bo'yicha yuqoridan pastga qarab saralaymiz (1, 2, 3-o'rinlar uchun)
+            const sortedStudents = Object.values(session.students).sort((a, b) => b.score - a.score);
+            
+            // Hamma qatnashchilarga (ham o'qituvchi, ham talabalarga) tartiblangan jadvalni yuboramiz
+            io.to(code).emit('quizFinished', sortedStudents);
             delete activeSessions[code];
             return;
         }
