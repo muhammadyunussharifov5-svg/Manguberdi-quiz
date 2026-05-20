@@ -34,11 +34,8 @@
         .monitor-table { width: 100%; border-collapse: collapse; margin-top: 15px; text-align: left; background: white; }
         .monitor-table th, .monitor-table td { padding: 14px; border: 1px solid #ddd; font-size: 16px; }
         .monitor-table th { background: #34495e; color: white; }
-        
-        /* Monitor uchun yangilangan rangli chiroqlar (Badges) */
-        .badge-waiting { background: #fff3cd; color: #856404; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #ffeeba; }
-        .badge-correct { background: #d4edda; color: #155724; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #c3e6cb; }
-        .badge-wrong { background: #f8d7da; color: #721c24; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #f5c6cb; }
+        .badge-waiting { background: #fce4e4; color: #e74c3c; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #f5c6cb; }
+        .badge-success { background: #d4edda; color: #155724; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; border: 1px solid #c3e6cb; }
         
         .stats-table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 16px; text-align: left; }
         .stats-table th, .stats-table td { padding: 10px; border: 1px solid #ddd; }
@@ -149,12 +146,12 @@
             <h3 id="t-question-title" style="margin:0 0 10px 0;">Savol: </h3>
             <p id="t-correct-ans" style="color:#2ecc71; font-weight:bold; margin:0;">To'g'ri javob: </p>
         </div>
-        <h3 style="text-align:left; margin-bottom: 5px;">O'quvchilar javob berish holati:</h3>
+        <h3 style="text-align:left; margin-bottom: 5px;">O'quvchilar holati:</h3>
         <table class="monitor-table">
             <thead>
                 <tr>
                     <th>O'quvchi Ismi</th>
-                    <th style="text-align: center; width: 250px;">Natija / Holat</th>
+                    <th style="text-align: center; width: 250px;">Holati</th>
                 </tr>
             </thead>
             <tbody id="monitor-players-list"></tbody>
@@ -212,7 +209,7 @@
 
 <script>
     const socket = io();
-    let currentRole = "guest"; 
+    let currentRole = "guest"; // "teacher", "student", "guest" - Kahoot singari boshqaruv kaliti
     let myStudentName = "";
     let soloQuiz = null; let soloCurrentQ = 0; let soloScore = 0; let soloTimer; let soloMode = 'immediate';
     let myGroupPin = null; let groupStartTime = 0;
@@ -434,23 +431,23 @@
 
     function exitLobby() { show('main-menu'); }
 
-    // BUG TUZATILDI: O'qituvchi o'yinni boshlaganda o'z xonasiga ulanadi
     function startGroupTest() { 
         if(myGroupPin) {
-            socket.emit('join_game', { pin: myGroupPin, name: "TEACHER_MONITOR" }); // Server uni monitor guruhiga bog'laydi
             socket.emit('start_game', myGroupPin); 
             show('teacher-monitor-view');
         }
     }
 
+    // Modal oynani chiqarish
     function openConfirmModal() {
         document.getElementById('confirm-modal').classList.remove('hidden');
     }
 
+    // Ha yoki Yo'q mantiqi
     function confirmForceEnd(isConfirmed) {
         document.getElementById('confirm-modal').classList.add('hidden');
         if(isConfirmed && myGroupPin) {
-            socket.emit('force_end_game', myGroupPin); 
+            socket.emit('force_end_game', myGroupPin); // Serverga yakunlash signali ketdi
         }
     }
 
@@ -462,7 +459,7 @@
         show('teacher-monitor-view');
         document.getElementById('t-monitor-qindex').innerText = `Savol: ${data.qIndex}/${data.totalQ}`;
         document.getElementById('t-question-title').innerText = `Savol: ${data.question}`;
-        document.getElementById('t-correct-ans').innerText = `O'quvchilar javob berishmoqda...⏳`;
+        document.getElementById('t-correct-ans').innerText = `To'g'ri javob yuklanmoqda...`;
         updateTeacherMonitorTable(data.players);
 
         let tTime = 30;
@@ -485,38 +482,21 @@
         updateTeacherMonitorTable(data.players);
     });
 
-    // TO'G'RI / XATO CHIROQLARI BILAN YANGILANGAN JONLI KUZATUV JADVALI
+    // O'quvchilarning ismi ostidagi yashil va qizil chiroqli mukammal kuzatuv jadvali
     function updateTeacherMonitorTable(players) {
         const tbody = document.getElementById('monitor-players-list');
-        // O'qituvchi logini ro'yxatda chiqib qolmasligi uchun tozalash
-        const activeStudents = players.filter(p => p.name !== "TEACHER_MONITOR");
-
-        if(!activeStudents || activeStudents.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="2" style="text-align:center; color:#95a5a6;">O'quvchilar kutilmoqda...</td></tr>`;
+        if(!players || players.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="2" style="text-align:center; color:#95a5a6;">Kutilmoqda...</td></tr>`;
             return;
         }
-
-        tbody.innerHTML = activeStudents.map(p => {
-            let statusBadge = `<span class="badge-waiting">🔴 O'ylamoqda...</span>`;
-            
-            // Agar o'quvchi javob bergan bo'lsa va serverdan uning to'g'ri/xatoligi kelayotgan bo'lsa
-            if(p.hasAnswered) {
-                if(p.isCorrect === true) {
-                    statusBadge = `<span class="badge-correct">🟢 To'g'ri topdi</span>`;
-                } else if(p.isCorrect === false) {
-                    statusBadge = `<span class="badge-wrong">❌ Xato javob</span>`;
-                } else {
-                    statusBadge = `<span class="badge-correct">🟡 Javob berdi</span>`; // Agar server hali tekshirmagan bo'lsa
-                }
-            }
-
-            return `
-                <tr>
-                    <td><strong>👤 ${p.name}</strong></td>
-                    <td style="text-align: center;">${statusBadge}</td>
-                </tr>
-            `;
-        }).join('');
+        tbody.innerHTML = players.map(p => `
+            <tr>
+                <td><strong>👤 ${p.name}</strong></td>
+                <td style="text-align: center;">
+                    ${p.hasAnswered ? `<span class="badge-success">🟢 Javob berdi</span>` : `<span class="badge-waiting">🔴 O'ylamoqda...</span>`}
+                </td>
+            </tr>
+        `).join('');
     }
 
     // --- STUDENT PANELI REAL-TIME HODISALARI ---
@@ -545,6 +525,7 @@
         let time = 30; 
         document.getElementById('timer-text').innerText = `Vaqt: ${time}`;
         
+        // Qat'iy qoida: Talaba variant tanlasa ham, bu taymer to'xtamaydi, oxirigacha soniya kamayadi!
         clearInterval(activeGroupTimer);
         activeGroupTimer = setInterval(() => { 
             time--; 
@@ -556,6 +537,7 @@
     function submitGroupAns(selected, btn) {
         let timeSpent = Date.now() - groupStartTime;
         
+        // Faqat bosish cheklanadi, vaqt hisobi ekranda davom etaveradi!
         document.querySelectorAll('.btn-ans').forEach(b => b.disabled = true);
         btn.style.background = '#3498db'; 
         btn.style.color = 'white';
@@ -585,6 +567,7 @@
 
     // --- YAKUNIY REYTING EKRAI (TABLO) ---
     socket.on('game_over', (players) => {
+        // Hamma oqim va taymerlarni butkul o'chirish
         clearInterval(teacherTimerInterval);
         clearInterval(activeGroupTimer);
         clearInterval(soloTimer);
@@ -592,16 +575,13 @@
         document.getElementById('confirm-modal').classList.add('hidden'); 
         show('final-leaderboard-view');
         
-        // Tablodan ham monitor o'chirib tashlanadi
-        const leaderboardPlayers = players.filter(p => p.name !== "TEACHER_MONITOR");
         const listDiv = document.getElementById('leaderboard-list');
-        
-        if(!leaderboardPlayers || leaderboardPlayers.length === 0) {
+        if(!players || players.length === 0) {
             listDiv.innerHTML = "<p style='color:#7f8c8d; font-weight:bold;'>Ishtirokchilar qatnashmadi.</p>";
             return;
         }
         
-        listDiv.innerHTML = leaderboardPlayers.map((p, index) => {
+        listDiv.innerHTML = players.map((p, index) => {
             let cls = 'rank-other';
             let medal = '跑';
             if(index === 0) { cls = 'rank-1'; medal = '🥇 1-O\'rin'; }
@@ -618,10 +598,13 @@
         }).join('');
     });
 
+    // KAHOOT SINGARI EXIT (CHIQISH) FUNKSIYASI
     function handleExitTablo() {
         if (currentRole === "teacher") {
+            // Teacher bo'lsa - avtomatik qayta login qilmasdan dashboardga qaytadi
             show('teacher-dashboard');
         } else {
+            // Student bo'lsa - to'g'ridan to'g'ri tizim bosh oynasiga otadi
             currentRole = "guest";
             show('main-menu');
         }

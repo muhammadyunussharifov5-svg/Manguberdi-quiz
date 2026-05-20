@@ -3,304 +3,255 @@ const http = require('http');
 const { Server } = require('socket.io');
 const multer = require('multer');
 const xlsx = require('xlsx');
-const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
-app.use(express.static('PUBLIC'));
 
-// Ma'lumotlarni doimiy saqlash uchun papka va fayllar (Butun umr saqlash uchun)
-const DATA_DIR = path.join(__dirname, 'data');
-const TEACHERS_FILE = path.join(DATA_DIR, 'teachers.json');
-const SUBJECTS_FILE = path.join(DATA_DIR, 'subjects.json');
+const upload = multer({ dest: 'uploads/' });
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(TEACHERS_FILE)) fs.writeFileSync(TEACHERS_FILE, JSON.stringify([]));
-if (!fs.existsSync(SUBJECTS_FILE)) fs.writeFileSync(SUBJECTS_FILE, JSON.stringify([]));
+let teachers = {}; 
+let globalQuizzes = {}; 
+let activeGames = {}; 
 
-// Fayldan ma'lumotlarni o'qish funksiyalari
-const getTeachers = () => JSON.parse(fs.readFileSync(TEACHERS_FILE, 'utf8'));
-const saveTeachers = (data) => fs.writeFileSync(TEACHERS_FILE, JSON.stringify(data, null, 2));
-const getSubjects = () => JSON.parse(fs.readFileSync(SUBJECTS_FILE, 'utf8'));
-const saveSubjects = (data) => fs.writeFileSync(SUBJECTS_FILE, JSON.stringify(data, null, 2));
-
-// Massivni aralashtirish (Random) funksiyasi
-function shuffleArray(array) {
-    let arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
+function generateKey(length, isLetters = true) {
+    const chars = isLetters ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' : '0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+    return result;
 }
 
-// Multer orqali Excel yuklash sozlamasi (Vaqtinchalik faylni xavfsiz saqlash)
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, 'uploads');
-        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
+// ================= TEACHER AVTORIZATSIYASI =================
+app.post('/api/register', (req, res) => {
+    const { login, password, secret } = req.body;
+    if (secret !== 'MANGU_1101') return res.json({ success: false, msg: 'Muvaffaqiyatsiz: Maxfiy kod xato!' });
+    if (teachers[login]) return res.json({ success: false, msg: 'Bu login avval ro\'yxatdan o\'tgan!' });
+    
+    teachers[login] = { password, quizzes: [] };
+    res.json({ success: true, msg: "Muvaffaqiyatli ro'yxatdan o'tdingiz!" });
+});
+
+app.post('/api/login', (req, res) => {
+    const { login, password } = req.body;
+    if (!teachers[login]) return res.json({ success: false, msg: "Siz teacher emassiz yoki ro'yxatdan o'tmagansiz!" });
+    if (teachers[login].password !== password) return res.json({ success: false, msg: "Login yoki parol xato!" });
+    
+    res.json({ success: true, quizzes: teachers[login].quizzes });
+});
+
+// ================= EXCEL YUKLASH VA BO'LISH =================
+app.post('/upload', upload.single('file'), (req, res) => {
+    const teacherLogin = req.body.login;
+    if (!teachers[teacherLogin]) return res.json({ success: false, msg: "Avtorizatsiyadan o'ting!" });
+
+    const workbook = xlsx.readFile(req.file.path);
+    const sheet_name_list = workbook.SheetNames;
+    const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheet_name_list[0]], { header: 1 });
+    data.shift(); 
+
+    let chunks = [];
+    let numChunks = Math.floor(data.length / 50);
+    let remainder = data.length % 50;
+
+    for (let i = 0; i < numChunks; i++) chunks.push(data.slice(i * 50, (i + 1) * 50));
+    if (remainder > 0) {
+        if (remainder >= 25) chunks.push(data.slice(numChunks * 50));
+        else if (chunks.length > 0) chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(data.slice(numChunks * 50));
+        else chunks.push(data.slice(0)); 
     }
-});
-const upload = multer({ storage: storage });
 
-// Guruhli o'yinlar holati (In-memory)
-const activeSessions = {};
+    let savedQuizzes = [];
+    chunks.forEach((chunk, index) => {
+        let key = generateKey(6); 
+        let quizObj = {
+            id: key,
+            title: `Test ${index + 1}-qism (${chunk.length} savol)`,
+            questions: chunk.map(row => ({
+                question: row[0], correct: row[1], wrong1: row[2], wrong2: row[3], wrong3: row[4]
+            }))
+        };
+        globalQuizzes[key] = quizObj;
+        teachers[teacherLogin].quizzes.push(quizObj);
+        savedQuizzes.push(quizObj);
+    });
 
-// Maxfiy kod (Faqat serverda tekshiriladi, xavfsiz)
-const SECRET_REG_CODE = "MANGU_1101";
-
-// --- API KANALLARI ---
-
-// Bosh sahifa yo'nalishi (Cannot GET / xatoligini oldini olish)
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'PUBLIC', 'index.html'));
-});
-
-// O'qituvchi ro'yxatdan o'tishi
-app.post('/api/teacher/register', (req, res) => {
-    const { username, password, secretCode } = req.body;
-    if (secretCode !== SECRET_REG_CODE) {
-        return res.status(400).json({ error: "Maxfiy kod noto'g'ri!" });
-    }
-    const teachers = getTeachers();
-    if (teachers.find(t => t.username === username)) {
-        return res.status(400).json({ error: "Bu login band!" });
-    }
-    teachers.push({ username, password });
-    saveTeachers(teachers);
-    res.json({ success: true });
+    res.json({ success: true, quizzes: teachers[teacherLogin].quizzes });
 });
 
-// O'qituvchi kirishi
-app.post('/api/teacher/login', (req, res) => {
-    const { username, password } = req.body;
-    const teachers = getTeachers();
-    const teacher = teachers.find(t => t.username === username && t.password === password);
-    if (!teacher) return res.status(400).json({ error: "Login yoki parol xato!" });
-    res.json({ success: true, username });
+app.get('/api/quiz/:id', (req, res) => {
+    const quiz = globalQuizzes[req.params.id];
+    if (quiz) res.json({ success: true, quiz });
+    else res.json({ success: false, msg: "Kalit xato yoki test topilmadi!" });
 });
 
-// Excel faylni yuklash va USTUN TARTIBI bo'yicha o'qish (HATO BERMAYDIGAN METOD)
-app.post('/api/quiz/upload', upload.single('file'), (req, res) => {
-    try {
-        if (!req.file) return res.status(400).json({ error: "Fayl yuklanmadi!" });
-        
-        const workbook = xlsx.readFile(req.file.path);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        
-        // header: 1 orqali Excel sarlavhalariga qaramay, [0,1,2,3,4] ustun ko'rinishida olamiz
-        const rows = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
-        fs.unlinkSync(req.file.path); // vaqtincha faylni darhol o'chirish
+// ================= SOCKET.IO GURUH TIZIMI =================
+io.on('connection', (socket) => {
+    
+    // O'qituvchi xona yaratadi
+    socket.on('create_game', ({ quizId }) => {
+        const pin = 'K' + generateKey(4, false); 
+        activeGames[pin] = { 
+            quiz: globalQuizzes[quizId], 
+            players: [], 
+            status: 'waiting', 
+            currentQ: 0,
+            teacherId: socket.id,
+            timeoutId: null,
+            nextQuestionTimeoutId: null
+        };
+        socket.join(pin);
+        socket.emit('game_created', pin);
+    });
 
-        let questions = [];
-        
-        // i=1 dan boshlaymiz, birinchi qator (sarlavha) tashlab ketiladi
-        for (let i = 1; i < rows.length; i++) {
-            const row = rows[i];
-            if (!row || row.length === 0 || !row[0]) continue; // bo'sh qator bo'lsa o'tkazib yuborish
+    // O'quvchi xonaga PIN orqali kiradi
+    socket.on('join_game', ({ pin, name }) => {
+        let game = activeGames[pin];
+        if (game && game.status === 'waiting') {
+            socket.join(pin);
+            // Yangi talaba obyektini qo'shish
+            game.players.push({ 
+                id: socket.id, 
+                name: name, 
+                score: 0, 
+                timeSpent: 0,
+                hasAnswered: false 
+            });
+            // Lobby dagi barchaga (O'qituvchi + Talabalar) yangilangan ro'yxatni uzatish
+            io.to(pin).emit('update_lobby', game.players);
+            socket.emit('joined', { pin, name });
+        } else {
+            socket.emit('error', "PIN kod xato yoki test boshlab yuborilgan!");
+        }
+    });
 
-            // Ustunlar tartibi bo'yicha qat'iy tekshirish
-            const savol = row[0];
-            const togriJavob = row[1];
-            const noto_g_ri1 = row[2] || "Javob yo'q";
-            const noto_g_ri2 = row[3] || "Javob yo'q";
-            const noto_g_ri3 = row[4] || "Javob yo'q";
+    // O'qituvchi testni start qiladi
+    socket.on('start_game', (pin) => {
+        let game = activeGames[pin];
+        if(game && game.status === 'waiting') {
+            game.status = 'playing';
+            sendQuestion(pin);
+        }
+    });
 
-            if (savol && togriJavob) {
-                questions.push({
-                    question: savol,
-                    options: [togriJavob, noto_g_ri1, noto_g_ri2, noto_g_ri3],
-                    answer: togriJavob
+    // O'qituvchi testni istalgan soniyada Ha tugmasi orqali to'xtatadi
+    socket.on('force_end_game', (pin) => {
+        let game = activeGames[pin];
+        if (game && game.status === 'playing') {
+            endGame(pin); // Darhol natijalar hisoblanib e'lon qilinadi
+        }
+    });
+
+    // O'quvchi javob tanlaganda
+    socket.on('submit_answer', ({ pin, selectedAnswer, time }) => {
+        let game = activeGames[pin];
+        if (game && game.status === 'playing') {
+            let player = game.players.find(p => p.id === socket.id);
+            if (player && !player.hasAnswered) {
+                player.hasAnswered = true; 
+                
+                let currentQObj = game.quiz.questions[game.currentQ - 1];
+                if (currentQObj && selectedAnswer === currentQObj.correct) {
+                    player.score += 1;
+                    player.timeSpent += time;
+                }
+                
+                // O'qituvchining Live kuzatuv panelini real vaqtda yashil chiroq qilish uchun yangilaymiz
+                io.to(game.teacherId).emit('teacher_monitor_update', {
+                    players: game.players
                 });
             }
         }
-
-        if (questions.length === 0) {
-            return res.status(400).json({ error: "Excel formati noto'g'ri yoki savollar topilmadi!" });
-        }
-
-        const subjects = getSubjects();
-        const subjectId = "sub_" + Date.now();
-        const newSubject = {
-            id: subjectId,
-            name: "Yangi Fan (Tahrirlash uchun bosing)",
-            sections: []
-        };
-
-        // Savollarni 50 tadan bo'laklarga bo'lish
-        const chunkSize = 50;
-        let secIndex = 1;
-        for (let i = 0; i < questions.length; i += chunkSize) {
-            const chunk = questions.slice(i, i + chunkSize);
-            newSubject.sections.push({
-                id: `sec_${subjectId}_${secIndex}`,
-                name: `${i + 1}-${Math.min(i + chunkSize, questions.length)} bo'lim`,
-                soloCode: `S-${Math.floor(1000 + Math.random() * 9000)}`,
-                questions: chunk
-            });
-            secIndex++;
-        }
-
-        subjects.push(newSubject);
-        saveSubjects(subjects);
-        res.json({ success: true });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Serverda xatolik yuz berdi!" });
-    }
-});
-
-// Fanlar ro'yxatini olish
-app.get('/api/subjects', (req, res) => {
-    res.json(getSubjects());
-});
-
-// Fan nomini yangilash
-app.post('/api/subject/rename', (req, res) => {
-    const { id, newName } = req.body;
-    let subjects = getSubjects();
-    const sub = subjects.find(s => s.id === id);
-    if (sub) {
-        sub.name = newName;
-        saveSubjects(subjects);
-        return res.json({ success: true });
-    }
-    res.status(404).json({ error: "Fan topilmadi" });
-});
-
-// Fanni o'chirib tashlash
-app.post('/api/subject/delete', (req, res) => {
-    const { id } = req.body;
-    let subjects = getSubjects();
-    subjects = subjects.filter(s => s.id !== id);
-    saveSubjects(subjects);
-    res.json({ success: true });
-});
-
-// Guruh kodi yoki Solo kodni tekshirish (Savollar har doim aralashtiriladi)
-app.post('/api/quiz/check-code', (req, res) => {
-    const { code } = req.body;
-    // 1. Aktiv guruh sessiyalaridan qidirish
-    if (activeSessions[code]) {
-        return res.json({ type: 'group', valid: true });
-    }
-    // 2. Solo kodlardan qidirish
-    const subjects = getSubjects();
-    for (const sub of subjects) {
-        const sec = sub.sections.find(s => s.soloCode === code);
-        if (sec) {
-            return res.json({ type: 'solo', valid: true, questions: shuffleArray(sec.questions) });
-        }
-    }
-    res.json({ valid: false });
-});
-
-// --- SOCKET.IO REALTIME TARMOQI ---
-io.on('connection', (socket) => {
-    // Guruhda test boshlash (Standart bo'lim yoki Random 20)
-    socket.on('startGroupQuiz', ({ subjectId, sectionId, mode }) => {
-        const subjects = getSubjects();
-        const sub = subjects.find(s => s.id === subjectId);
-        if (!sub) return;
-
-        let quizQuestions = [];
-        let codePrefix = "G-";
-
-        if (mode === 'random20') {
-            let allQuestions = [];
-            sub.sections.forEach(sec => { allQuestions = allQuestions.concat(sec.questions); });
-            quizQuestions = shuffleArray(allQuestions).slice(0, 20);
-            codePrefix = "R" + Math.floor(10 + Math.random() * 90); // Masalan: R45
-        } else {
-            const sec = sub.sections.find(s => s.id === sectionId);
-            if (!sec) return;
-            quizQuestions = shuffleArray(sec.questions);
-        }
-
-        const sessionCode = codePrefix + Math.floor(1000 + Math.random() * 9000);
-        activeSessions[sessionCode] = {
-            code: sessionCode,
-            questions: quizQuestions,
-            currentIndex: 0,
-            students: {},
-            teacherSocketId: socket.id
-        };
-
-        socket.join(sessionCode);
-        socket.emit('sessionCreated', { code: sessionCode });
     });
 
-    // Talaba guruhga qo'shilishi
-    socket.on('joinGroup', ({ code, name }) => {
-        const session = activeSessions[code];
-        if (!session) return socket.emit('errorMsg', 'Sessiya topilmadi!');
+    function sendQuestion(pin) {
+        let game = activeGames[pin];
+        if (!game || game.status !== 'playing') return;
 
-        session.students[name] = { name, score: 0, status: 'O\'ylamoqda... 🟡' };
-        socket.join(code);
-        socket.emit('studentJoinedSuccess', { code, name });
-
-        io.to(session.code).emit('updateMonitor', Object.values(session.students));
-    });
-
-    // O'qituvchi birinchi/navbatdagi savolni chiqarishi
-    socket.on('nextQuestion', ({ code }) => {
-        const session = activeSessions[code];
-        if (!session) return;
-
-        // Agar savollar tugagan bo'lsa, reyting tizimini hisoblab tugatamiz
-        if (session.currentIndex >= session.questions.length) {
-            // Talabalarni ballari bo'yicha yuqoridan pastga qarab saralaymiz (1, 2, 3-o'rinlar uchun)
-            const sortedStudents = Object.values(session.students).sort((a, b) => b.score - a.score);
+        if (game.currentQ < game.quiz.questions.length) {
+            let q = game.quiz.questions[game.currentQ];
+            let answers = [q.correct, q.wrong1, q.wrong2, q.wrong3].sort(() => Math.random() - 0.5);
             
-            // Hamma qatnashchilarga (ham o'qituvchi, ham talabalarga) tartiblangan jadvalni yuboramiz
-            io.to(code).emit('quizFinished', sortedStudents);
-            delete activeSessions[code];
-            return;
+            game.currentQ++;
+
+            // Har bir yangi savolda hamma o'quvchilarni "o'ylamoqda" holatiga o'tkazish
+            game.players.forEach(p => { p.hasAnswered = false; });
+
+            // Faqat xonadagi o'quvchilarga savol boradi (O'qituvchiga bormaydi)
+            socket.to(pin).emit('new_question', { 
+                question: q.question, 
+                answers: answers, 
+                qIndex: game.currentQ,
+                totalQ: game.quiz.questions.length
+            });
+
+            // Faqat o'qituvchi monitoriga savol tafsilotlari va yangi o'quvchilar ro'yxati boradi
+            io.to(game.teacherId).emit('teacher_new_question', {
+                question: q.question,
+                correctAnswer: q.correct,
+                qIndex: game.currentQ,
+                totalQ: game.quiz.questions.length,
+                players: game.players
+            });
+            
+            if (game.timeoutId) clearTimeout(game.timeoutId);
+            if (game.nextQuestionTimeoutId) clearTimeout(game.nextQuestionTimeoutId);
+            
+            // 30 soniyadan keyin javoblarni ochish mantiqi
+            game.timeoutId = setTimeout(() => {
+                if (game.status !== 'playing') return;
+                
+                socket.to(pin).emit('show_answer', q.correct);
+                io.to(game.teacherId).emit('teacher_show_answer', q.correct);
+                
+                // 3 soniya natija ko'rinib keyingi savol avtomat uzatiladi
+                game.nextQuestionTimeoutId = setTimeout(() => {
+                    sendQuestion(pin);
+                }, 3000); 
+            }, 30000); 
+
+        } else {
+            endGame(pin);
         }
+    }
 
-        const currentQ = session.questions[session.currentIndex];
-        Object.keys(session.students).forEach(name => {
-            session.students[name].status = 'O\'ylamoqda... 🟡';
-        });
+    function endGame(pin) {
+        let game = activeGames[pin];
+        if (!game) return;
 
-        io.to(code).emit('newQuestion', {
-            question: currentQ.question,
-            options: currentQ.options, 
-            answer: currentQ.answer,
-            index: session.currentIndex + 1,
-            total: session.questions.length
-        });
-        io.to(code).emit('updateMonitor', Object.values(session.students));
-        session.currentIndex++;
-    });
+        // Barcha faol taymerlar butkul bloklanadi
+        if (game.timeoutId) clearTimeout(game.timeoutId);
+        if (game.nextQuestionTimeoutId) clearTimeout(game.nextQuestionTimeoutId);
 
-    // Talaba javob berganda (To'g'ri/Noto'g'ri aniq status bilan ko'rsatish)
-    socket.on('submitAnswer', ({ code, name, isCorrect }) => {
-        const session = activeSessions[code];
-        if (!session) return;
+        // Reytingni hisoblash: To'g'ri javob ko'pligi, teng bo'lsa kam vaqt sarflagani ustun
+        game.players.sort((a, b) => b.score - a.score || a.timeSpent - b.timeSpent);
+        game.status = 'finished';
+        
+        // Butun guruhga (O'qituvchi va Studentlarga) bir vaqtda darhol natijalar jadvalini (Tablo) yuborish
+        io.to(pin).emit('game_over', game.players);
+    }
 
-        if (session.students[name]) {
-            if (isCorrect) {
-                session.students[name].score += 10;
-                session.students[name].status = 'To\'g\'ri javob berdi! 🟢';
-            } else {
-                session.students[name].status = 'Noto\'g\'ri javob berdi! 🔴';
+    socket.on('disconnect', () => {
+        for (let pin in activeGames) {
+            let game = activeGames[pin];
+            let index = game.players.findIndex(p => p.id === socket.id);
+            if (index !== -1) {
+                game.players.splice(index, 1);
+                io.to(pin).emit('update_lobby', game.players);
+                if(game.status === 'playing') {
+                    io.to(game.teacherId).emit('teacher_monitor_update', {
+                        players: game.players
+                    });
+                }
+                break;
             }
-            io.to(code).emit('updateMonitor', Object.values(session.students));
         }
     });
 });
 
-// Portni xavfsiz sozlash
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Serverimiz ${PORT}-portda muvaffaqiyatli ishga tushdi`);
