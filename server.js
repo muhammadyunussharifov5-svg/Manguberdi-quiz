@@ -13,7 +13,7 @@ const io = new Server(server);
 app.use(express.json());
 app.use(express.static('PUBLIC'));
 
-// Ma'lumotlarni doimiy saqlash uchun papka va fayllar
+// Ma'lumotlarni doimiy saqlash uchun papka va fayllar (Butun umr saqlash uchun)
 const DATA_DIR = path.join(__dirname, 'data');
 const TEACHERS_FILE = path.join(DATA_DIR, 'teachers.json');
 const SUBJECTS_FILE = path.join(DATA_DIR, 'subjects.json');
@@ -38,16 +38,31 @@ function shuffleArray(array) {
     return arr;
 }
 
-// Multer orqali Excel yuklash sozlamasi
-const upload = multer({ dest: 'uploads/' });
+// Multer orqali Excel yuklash sozlamasi (Vaqtinchalik faylni xavfsiz saqlash)
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, 'uploads');
+        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + '-' + file.originalname);
+    }
+});
+const upload = multer({ storage: storage });
 
 // Guruhli o'yinlar holati (In-memory)
 const activeSessions = {};
 
-// Maxfiy kod (Faqat serverda saqlanadi)
+// Maxfiy kod (Faqat serverda tekshiriladi, xavfsiz)
 const SECRET_REG_CODE = "MANGU_1101";
 
 // --- API KANALLARI ---
+
+// Bosh sahifa yo'nalishi (Cannot GET / xatoligini oldini olish)
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'PUBLIC', 'index.html'));
+});
 
 // O'qituvchi ro'yxatdan o'tishi
 app.post('/api/teacher/register', (req, res) => {
@@ -73,22 +88,45 @@ app.post('/api/teacher/login', (req, res) => {
     res.json({ success: true, username });
 });
 
-// Excel faylni yuklash va avtomatik 50 tadan bo'limlarga bo'lish
+// Excel faylni yuklash va USTUN TARTIBI bo'yicha o'qish (HATO BERMAYDIGAN METOD)
 app.post('/api/quiz/upload', upload.single('file'), (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "Fayl yuklanmadi!" });
+        
         const workbook = xlsx.readFile(req.file.path);
         const sheetName = workbook.SheetNames[0];
-        const rawData = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-        fs.unlinkSync(req.file.path); // vaqtincha faylni o'chirish
+        const worksheet = workbook.Sheets[sheetName];
+        
+        // header: 1 orqali Excel sarlavhalariga qaramay, [0,1,2,3,4] ustun ko'rinishida olamiz
+        const rows = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+        fs.unlinkSync(req.file.path); // vaqtincha faylni darhol o'chirish
 
-        const questions = rawData.map(row => ({
-            question: row['Savol'] || row['savol'],
-            options: [row['A'], row['B'], row['C'], row['D']],
-            answer: row['Javob'] || row['javob']
-        })).filter(q => q.question && q.answer);
+        let questions = [];
+        
+        // i=1 dan boshlaymiz, birinchi qator (sarlavha) tashlab ketiladi
+        for (let i = 1; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row || row.length === 0 || !row[0]) continue; // bo'sh qator bo'lsa o'tkazib yuborish
 
-        if (questions.length === 0) return res.status(400).json({ error: "Excel formati noto'g'ri yoki savollar topilmadi!" });
+            // Ustunlar tartibi bo'yicha qat'iy tekshirish
+            const savol = row[0];
+            const togriJavob = row[1];
+            const noto_g_ri1 = row[2] || "Javob yo'q";
+            const noto_g_ri2 = row[3] || "Javob yo'q";
+            const noto_g_ri3 = row[4] || "Javob yo'q";
+
+            if (savol && togriJavob) {
+                questions.push({
+                    question: savol,
+                    options: [togriJavob, noto_g_ri1, noto_g_ri2, noto_g_ri3],
+                    answer: togriJavob
+                });
+            }
+        }
+
+        if (questions.length === 0) {
+            return res.status(400).json({ error: "Excel formati noto'g'ri yoki savollar topilmadi!" });
+        }
 
         const subjects = getSubjects();
         const subjectId = "sub_" + Date.now();
@@ -116,6 +154,7 @@ app.post('/api/quiz/upload', upload.single('file'), (req, res) => {
         saveSubjects(subjects);
         res.json({ success: true });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: "Serverda xatolik yuz berdi!" });
     }
 });
@@ -139,7 +178,7 @@ app.post('/api/subject/rename', (req, res) => {
 });
 
 // Fanni o'chirib tashlash
-delete app.post('/api/subject/delete', (req, res) => {
+app.post('/api/subject/delete', (req, res) => {
     const { id } = req.body;
     let subjects = getSubjects();
     subjects = subjects.filter(s => s.id !== id);
@@ -147,7 +186,7 @@ delete app.post('/api/subject/delete', (req, res) => {
     res.json({ success: true });
 });
 
-// Guruh kodi yoki Solo kodni tekshirish
+// Guruh kodi yoki Solo kodni tekshirish (Savollar har doim aralashtiriladi)
 app.post('/api/quiz/check-code', (req, res) => {
     const { code } = req.body;
     // 1. Aktiv guruh sessiyalaridan qidirish
@@ -177,11 +216,10 @@ io.on('connection', (socket) => {
         let codePrefix = "G-";
 
         if (mode === 'random20') {
-            // Fandagi barcha savollarni yig'ish
             let allQuestions = [];
             sub.sections.forEach(sec => { allQuestions = allQuestions.concat(sec.questions); });
             quizQuestions = shuffleArray(allQuestions).slice(0, 20);
-            codePrefix = "R" + Math.floor(10 + Math.random() * 90); // Masalan: R15
+            codePrefix = "R" + Math.floor(10 + Math.random() * 90); // Masalan: R45
         } else {
             const sec = sub.sections.find(s => s.id === sectionId);
             if (!sec) return;
@@ -210,7 +248,6 @@ io.on('connection', (socket) => {
         socket.join(code);
         socket.emit('studentJoinedSuccess', { code, name });
 
-        // O'qituvchiga yangilangan ro'yxatni jo'natish
         io.to(session.code).emit('updateMonitor', Object.values(session.students));
     });
 
@@ -226,14 +263,13 @@ io.on('connection', (socket) => {
         }
 
         const currentQ = session.questions[session.currentIndex];
-        // Talabalarning statusini yangilash
         Object.keys(session.students).forEach(name => {
             session.students[name].status = 'O\'ylamoqda... 🟡';
         });
 
         io.to(code).emit('newQuestion', {
             question: currentQ.question,
-            options: currentQ.options, // variantlar ham har doim aralashib borishi uchun index.html da boshqariladi
+            options: currentQ.options, 
             answer: currentQ.answer,
             index: session.currentIndex + 1,
             total: session.questions.length
@@ -242,7 +278,7 @@ io.on('connection', (socket) => {
         session.currentIndex++;
     });
 
-    // Talaba javob berganda (To'g'ri yoki Noto'g'riligini o'qituvchiga real-time ko'rsatish)
+    // Talaba javob berganda (To'g'ri/Noto'g'ri aniq status bilan ko'rsatish)
     socket.on('submitAnswer', ({ code, name, isCorrect }) => {
         const session = activeSessions[code];
         if (!session) return;
@@ -259,7 +295,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// Portni sozlash
+// Portni xavfsiz sozlash
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Serverimiz ${PORT}-portda muvaffaqiyatli ishga tushdi`);
