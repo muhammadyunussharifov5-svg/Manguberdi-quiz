@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const path = require('path');
+const mongoose = require('mongoose'); // Yangi qo'shildi
 
 const app = express();
 app.use(express.static('PUBLIC'));
@@ -15,8 +16,30 @@ app.use(express.json());
 
 const upload = multer({ dest: 'uploads/' });
 
-let teachers = {}; 
-let globalQuizzes = {}; 
+// ================= MONGODB GA ULANISH =================
+// Sizning tayyor havolangiz shu yerga joylashtirildi:
+const MONGO_URI = "mongodb+srv://mangu_user:Kkhkmymomangu_1101@cluster0.9guqu8n.mongodb.net/quizdb?retryWrites=true&w=majority";
+
+mongoose.connect(MONGO_URI)
+    .then(() => console.log("MongoDB bazasiga muvaffaqiyatli ulandik!"))
+    .catch((err) => console.error("Baza ulanishida xatolik:", err));
+
+// ================= MA'LUMOTLAR MODELI (SCHEMAS) =================
+const teacherSchema = new mongoose.Schema({
+    login: { type: String, required: true, unique: true },
+    password: { type: String, required: true }
+});
+const Teacher = mongoose.model('Teacher', teacherSchema);
+
+const quizSchema = new mongoose.Schema({
+    id: { type: String, required: true, unique: true }, 
+    title: String,
+    questions: Array,
+    teacherLogin: String 
+});
+const Quiz = mongoose.model('Quiz', quizSchema);
+
+// Jonli o'yinlar tezkor xotirada qoladi
 let activeGames = {}; 
 
 function generateKey(length, isLetters = true) {
@@ -27,76 +50,104 @@ function generateKey(length, isLetters = true) {
 }
 
 // ================= TEACHER AVTORIZATSIYASI =================
-app.post('/api/register', (req, res) => {
-    const { login, password, secret } = req.body;
-    if (secret !== 'MANGU_1101') return res.json({ success: false, msg: 'Muvaffaqiyatsiz: Maxfiy kod xato!' });
-    if (teachers[login]) return res.json({ success: false, msg: 'Bu login avval ro\'yxatdan o\'tgan!' });
-    
-    teachers[login] = { password, quizzes: [] };
-    res.json({ success: true, msg: "Muvaffaqiyatli ro'yxatdan o'tdingiz!" });
+app.post('/api/register', async (req, res) => {
+    try {
+        const { login, password, secret } = req.body;
+        if (secret !== 'MANGU_1101') return res.json({ success: false, msg: 'Muvaffaqiyatsiz: Maxfiy kod xato!' });
+        
+        const existingTeacher = await Teacher.findOne({ login });
+        if (existingTeacher) return res.json({ success: false, msg: 'Bu login avval ro\'yxatdan o\'tgan!' });
+        
+        const newTeacher = new Teacher({ login, password });
+        await newTeacher.save();
+
+        res.json({ success: true, msg: "Muvaffaqiyatli ro'yxatdan o'tdingiz!" });
+    } catch (err) {
+        res.json({ success: false, msg: "Serverda xatolik yuz berdi!" });
+    }
 });
 
-app.post('/api/login', (req, res) => {
-    const { login, password } = req.body;
-    if (!teachers[login]) return res.json({ success: false, msg: "Siz teacher emassiz yoki ro'yxatdan o'tmagansiz!" });
-    if (teachers[login].password !== password) return res.json({ success: false, msg: "Login yoki parol xato!" });
-    
-    res.json({ success: true, quizzes: teachers[login].quizzes });
+app.post('/api/login', async (req, res) => {
+    try {
+        const { login, password } = req.body;
+        const teacher = await Teacher.findOne({ login });
+        
+        if (!teacher) return res.json({ success: false, msg: "Siz teacher emassiz yoki ro'yxatdan o'tmagansiz!" });
+        if (teacher.password !== password) return res.json({ success: false, msg: "Login yoki parol xato!" });
+        
+        const quizzes = await Quiz.find({ teacherLogin: login });
+        res.json({ success: true, quizzes: quizzes });
+    } catch (err) {
+        res.json({ success: false, msg: "Serverda xatolik!" });
+    }
 });
 
 // ================= EXCEL YUKLASH VA BO'LISH =================
-app.post('/upload', upload.single('file'), (req, res) => {
-    const teacherLogin = req.body.login;
-    if (!teachers[teacherLogin]) return res.json({ success: false, msg: "Avtorizatsiyadan o'ting!" });
+app.post('/upload', upload.single('file'), async (req, res) => {
+    try {
+        const teacherLogin = req.body.login;
+        const teacher = await Teacher.findOne({ login: teacherLogin });
+        if (!teacher) return res.json({ success: false, msg: "Avtorizatsiyadan o'ting!" });
 
-    const workbook = xlsx.readFile(req.file.path);
-    const sheet_name_list = workbook.SheetNames;
-    const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheet_name_list[0]], { header: 1 });
-    data.shift(); 
+        const workbook = xlsx.readFile(req.file.path);
+        const sheet_name_list = workbook.SheetNames;
+        const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheet_name_list[0]], { header: 1 });
+        data.shift(); 
 
-    let chunks = [];
-    let numChunks = Math.floor(data.length / 50);
-    let remainder = data.length % 50;
+        let chunks = [];
+        let numChunks = Math.floor(data.length / 50);
+        let remainder = data.length % 50;
 
-    for (let i = 0; i < numChunks; i++) chunks.push(data.slice(i * 50, (i + 1) * 50));
-    if (remainder > 0) {
-        if (remainder >= 25) chunks.push(data.slice(numChunks * 50));
-        else if (chunks.length > 0) chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(data.slice(numChunks * 50));
-        else chunks.push(data.slice(0)); 
+        for (let i = 0; i < numChunks; i++) chunks.push(data.slice(i * 50, (i + 1) * 50));
+        if (remainder > 0) {
+            if (remainder >= 25) chunks.push(data.slice(numChunks * 50));
+            else if (chunks.length > 0) chunks[chunks.length - 1] = chunks[chunks.length - 1].concat(data.slice(numChunks * 50));
+            else chunks.push(data.slice(0)); 
+        }
+
+        for (let index = 0; index < chunks.length; index++) {
+            let chunk = chunks[index];
+            let key = generateKey(6); 
+            
+            let quizObj = new Quiz({
+                id: key,
+                title: `Test ${index + 1}-qism (${chunk.length} savol)`,
+                questions: chunk.map(row => ({
+                    question: row[0], correct: row[1], wrong1: row[2], wrong2: row[3], wrong3: row[4]
+                })),
+                teacherLogin: teacherLogin
+            });
+
+            await quizObj.save();
+        }
+
+        const allQuizzes = await Quiz.find({ teacherLogin: teacherLogin });
+        res.json({ success: true, quizzes: allQuizzes });
+    } catch (err) {
+        res.json({ success: false, msg: "Faylni qayta ishlashda xatolik!" });
     }
-
-    let savedQuizzes = [];
-    chunks.forEach((chunk, index) => {
-        let key = generateKey(6); 
-        let quizObj = {
-            id: key,
-            title: `Test ${index + 1}-qism (${chunk.length} savol)`,
-            questions: chunk.map(row => ({
-                question: row[0], correct: row[1], wrong1: row[2], wrong2: row[3], wrong3: row[4]
-            }))
-        };
-        globalQuizzes[key] = quizObj;
-        teachers[teacherLogin].quizzes.push(quizObj);
-        savedQuizzes.push(quizObj);
-    });
-
-    res.json({ success: true, quizzes: teachers[teacherLogin].quizzes });
 });
 
-app.get('/api/quiz/:id', (req, res) => {
-    const quiz = globalQuizzes[req.params.id];
-    if (quiz) res.json({ success: true, quiz });
-    else res.json({ success: false, msg: "Kalit xato yoki test topilmadi!" });
+app.get('/api/quiz/:id', async (req, res) => {
+    try {
+        const quiz = await Quiz.findOne({ id: req.params.id });
+        if (quiz) res.json({ success: true, quiz });
+        else res.json({ success: false, msg: "Kalit xato yoki test topilmadi!" });
+    } catch (err) {
+        res.json({ success: false, msg: "Xatolik yuz berdi!" });
+    }
 });
 
 // ================= SOCKET.IO GURUH TIZIMI =================
 io.on('connection', (socket) => {
     
-    // O'qituvchi xona yaratadi
-    socket.on('create_game', ({ quizId }) => {
+    socket.on('create_game', async ({ quizId }) => {
+        const quiz = await Quiz.findOne({ id: quizId });
+        if(!quiz) return socket.emit('error', 'Test topilmadi!');
+
         const pin = 'K' + generateKey(4, false); 
         activeGames[pin] = { 
-            quiz: globalQuizzes[quizId], 
+            quiz: quiz, 
             players: [], 
             status: 'waiting', 
             currentQ: 0,
@@ -108,12 +159,10 @@ io.on('connection', (socket) => {
         socket.emit('game_created', pin);
     });
 
-    // O'quvchi xonaga PIN orqali kiradi
     socket.on('join_game', ({ pin, name }) => {
         let game = activeGames[pin];
         if (game && game.status === 'waiting') {
             socket.join(pin);
-            // Yangi talaba obyektini qo'shish
             game.players.push({ 
                 id: socket.id, 
                 name: name, 
@@ -121,7 +170,6 @@ io.on('connection', (socket) => {
                 timeSpent: 0,
                 hasAnswered: false 
             });
-            // Lobby dagi barchaga (O'qituvchi + Talabalar) yangilangan ro'yxatni uzatish
             io.to(pin).emit('update_lobby', game.players);
             socket.emit('joined', { pin, name });
         } else {
@@ -129,7 +177,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // O'qituvchi testni start qiladi
     socket.on('start_game', (pin) => {
         let game = activeGames[pin];
         if(game && game.status === 'waiting') {
@@ -138,15 +185,13 @@ io.on('connection', (socket) => {
         }
     });
 
-    // O'qituvchi testni istalgan soniyada Ha tugmasi orqali to'xtatadi
     socket.on('force_end_game', (pin) => {
         let game = activeGames[pin];
         if (game && game.status === 'playing') {
-            endGame(pin); // Darhol natijalar hisoblanib e'lon qilinadi
+            endGame(pin); 
         }
     });
 
-    // O'quvchi javob tanlaganda
     socket.on('submit_answer', ({ pin, selectedAnswer, time }) => {
         let game = activeGames[pin];
         if (game && game.status === 'playing') {
@@ -160,7 +205,6 @@ io.on('connection', (socket) => {
                     player.timeSpent += time;
                 }
                 
-                // O'qituvchining Live kuzatuv panelini real vaqtda yashil chiroq qilish uchun yangilaymiz
                 io.to(game.teacherId).emit('teacher_monitor_update', {
                     players: game.players
                 });
@@ -177,11 +221,8 @@ io.on('connection', (socket) => {
             let answers = [q.correct, q.wrong1, q.wrong2, q.wrong3].sort(() => Math.random() - 0.5);
             
             game.currentQ++;
-
-            // Har bir yangi savolda hamma o'quvchilarni "o'ylamoqda" holatiga o'tkazish
             game.players.forEach(p => { p.hasAnswered = false; });
 
-            // Faqat xonadagi o'quvchilarga savol boradi (O'qituvchiga bormaydi)
             socket.to(pin).emit('new_question', { 
                 question: q.question, 
                 answers: answers, 
@@ -189,7 +230,6 @@ io.on('connection', (socket) => {
                 totalQ: game.quiz.questions.length
             });
 
-            // Faqat o'qituvchi monitoriga savol tafsilotlari va yangi o'quvchilar ro'yxati boradi
             io.to(game.teacherId).emit('teacher_new_question', {
                 question: q.question,
                 correctAnswer: q.correct,
@@ -201,14 +241,12 @@ io.on('connection', (socket) => {
             if (game.timeoutId) clearTimeout(game.timeoutId);
             if (game.nextQuestionTimeoutId) clearTimeout(game.nextQuestionTimeoutId);
             
-            // 30 soniyadan keyin javoblarni ochish mantiqi
             game.timeoutId = setTimeout(() => {
                 if (game.status !== 'playing') return;
                 
                 socket.to(pin).emit('show_answer', q.correct);
                 io.to(game.teacherId).emit('teacher_show_answer', q.correct);
                 
-                // 3 soniya natija ko'rinib keyingi savol avtomat uzatiladi
                 game.nextQuestionTimeoutId = setTimeout(() => {
                     sendQuestion(pin);
                 }, 3000); 
@@ -223,15 +261,12 @@ io.on('connection', (socket) => {
         let game = activeGames[pin];
         if (!game) return;
 
-        // Barcha faol taymerlar butkul bloklanadi
         if (game.timeoutId) clearTimeout(game.timeoutId);
         if (game.nextQuestionTimeoutId) clearTimeout(game.nextQuestionTimeoutId);
 
-        // Reytingni hisoblash: To'g'ri javob ko'pligi, teng bo'lsa kam vaqt sarflagani ustun
         game.players.sort((a, b) => b.score - a.score || a.timeSpent - b.timeSpent);
         game.status = 'finished';
         
-        // Butun guruhga (O'qituvchi va Studentlarga) bir vaqtda darhol natijalar jadvalini (Tablo) yuborish
         io.to(pin).emit('game_over', game.players);
     }
 
